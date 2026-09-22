@@ -1,6 +1,26 @@
 Matrix.Kitchen = {}
 
 
+-- ★ [HOTFIX] Context Drift duzeltmesi: bu fonksiyon eskiden dosyanin
+-- COK ILERISINDE (MONOKROM TAKTIK DEBUG PANELI bolumunde) tanimliydi.
+-- Lua'da `local function` HOISTING yapmaz -- yalnizca kendi `local`
+-- satirindan SONRAKI kod bu ismi gorur. /paketleuret (asagida,
+-- KATMAN 7 FAZ 2 paketleme odasi komutu) bu tanimdan ONCE Reply(...)
+-- cagirdigi icin o closure'da isim HICBIR ZAMAN yerel degildi -- global
+-- 'Reply' aranip nil bulunuyordu ("attempt to call a nil value").
+-- Diger TUM server dosyalarinin (blackmarket.lua, market.lua, bureau.lua,
+-- ...) ZATEN VAR OLAN konvansiyonuyla AYNI: Reply dosyanin EN BASINDA,
+-- ILK kullanimdan ONCE tanimlanir. Govde DEGISTIRILMEDI, yalnizca konumu
+-- tasindi (bkz. eski konumdaki MONOKROM TAKTIK DEBUG PANELI basligi).
+local function Reply(src, msg)
+    if type(src) == 'number' and src > 0 then
+        TriggerClientEvent('chat:addMessage', src, { args = { '[KITCHEN]', msg } })
+    else
+        print(('[MATRIX:KITCHEN:CONSOLE] %s'):format(msg))
+    end
+end
+
+
 -- Hangi aktivite hangi beceriyi pratikle organik olarak büyütür (RNG yok).
 local ACTIVITY_SKILL_MAP = {
     cooking        = 'skill_chemistry',
@@ -895,16 +915,8 @@ end
 -- Gerçek oyun temposu: fatigue/cortisol her GERÇEK dakikada bir
 -- (ProcessMinuteCycle), withdrawal her GERÇEK saatte bir (ProcessHourCycle)
 -- işlenir. Bu komutlar o beklemeyi atlayıp döngüleri anlık tetikler.
+-- (Reply(...) artik dosya basinda tanimli -- bkz. [HOTFIX] notu yukarida.)
 -- =====================================================================
-local function Reply(src, msg)
-    if type(src) == 'number' and src > 0 then
-        TriggerClientEvent('chat:addMessage', src, { args = { '[KITCHEN]', msg } })
-    else
-        print(('[MATRIX:KITCHEN:CONSOLE] %s'):format(msg))
-    end
-end
-
-
 -- /mutfaktest [botId] [trapHouseId] [hamAgirlik] [hamSaflik] [ajanAgirlik] -
 -- ProcessCook'u bir BOT aktörü için doğrudan çalıştırır (normal event
 -- köprüsü sadece 'player' aktörünü destekler). theoretical_purity/
