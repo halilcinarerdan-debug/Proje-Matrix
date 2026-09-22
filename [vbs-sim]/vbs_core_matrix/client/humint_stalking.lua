@@ -29,6 +29,20 @@
 --   STALKING_STATE_LOST olayı olarak işaretlenir ve takip yumuşakça
 --   sonlandırılır (crash YOK, hitch YOK).
 --
+-- [HS-4] DİKİZ AYNASI ŞÜPHE MOMENTUMU (SUSPICION MOMENTUM):
+--   Oyuncu hedefin FOV konisinde (bkz. HS-2) ARDIŞIK/kesintisiz kalırsa,
+--   hedefin `suspicionIndex`'i her onaylanan tik'te SABİT bir üstel
+--   çarpanla (STALKING_SUSPICION_GROWTH_FACTOR) büyür — düz hatta
+--   yapışık takip ne kadar UZUN sürerse şüphe o kadar HIZLI tırmanır.
+--   Görüş hattı kaybedilince (onVisualLoss) aynı şekilde üstel olarak
+--   SÖNÜMLENİR (STALKING_SUSPICION_DECAY_FACTOR). Kritik eşiğe
+--   (STALKING_SUSPICION_CRITICAL_THRESHOLD) ulaşılınca `onSuspicionCritical`
+--   geri çağrısı tetiklenir VE oyuncuya paralel caddelere sızması/araya
+--   sivil trafik sokması gerektiği bildirilir; momentum tam sıfırlanmaz
+--   (yalnızca yarıya iner) — oyuncu görüş hattını GERÇEKTEN bozmadıkça
+--   şüphe birikmeye devam eder.
+--   SIFIR RNG: büyüme/sönümleme sabit çarpanlarla tekrarlanan çarpımdır.
+--
 -- SIFIR RNG: adaptif interval saf doğrusal formül; FOV saf trigonometri.
 -- =====================================================================
 
@@ -36,6 +50,13 @@ local STALKING_BASE_INTERVAL_MS = 1500  -- duruyorken
 local STALKING_FAST_INTERVAL_MS = 300   -- 100+ km/s üzerinde
 local STALKING_SPEED_THRESHOLD_KMH = 100.0
 local STALKING_FOV_DEGREES = 90.0       -- Toplam FOV (simetrik, ±45°)
+
+-- ★ [HS-4] Şüphe momentumu sabitleri (RNG YOK — sabit üstel çarpanlar).
+local STALKING_SUSPICION_BASE            = 1.0
+local STALKING_SUSPICION_GROWTH_FACTOR   = 1.15  -- her onaylanan (kesintisiz) tik
+local STALKING_SUSPICION_DECAY_FACTOR    = 0.80  -- her görüş-hattı kaybı tiki
+local STALKING_SUSPICION_CAP             = 100.0 -- float taşmasına karşı üst sınır
+local STALKING_SUSPICION_CRITICAL_THRESHOLD = 6.0 -- ~13 ardışık onay tikinde asilir
 
 local stalkedTargets = {}   -- [targetNetId] = { vehicleEntity, startedAt, lastKnownCoords }
 local stalkingRunning = false
@@ -212,11 +233,32 @@ CreateThread(function()
                             if target.onVisualConfirm then
                                 pcall(target.onVisualConfirm, netId, targetCoords, cosTheta)
                             end
+
+                            -- ★ [HS-4] Kesintisiz onay -- şüphe momentumu ÜSTEL büyür.
+                            target.suspicionIndex = math.min(
+                                (target.suspicionIndex or STALKING_SUSPICION_BASE) * STALKING_SUSPICION_GROWTH_FACTOR,
+                                STALKING_SUSPICION_CAP)
+
+                            if target.suspicionIndex >= STALKING_SUSPICION_CRITICAL_THRESHOLD then
+                                if target.onSuspicionCritical then
+                                    pcall(target.onSuspicionCritical, netId, target.suspicionIndex)
+                                end
+                                ReplyLocal(('KRITIK SUPHE (%.1f): kurye duz hatta yapisik oldugunuzu fark etti -- paralel caddelere sizin, araya sivil trafik sokun!'):format(
+                                    target.suspicionIndex))
+                                -- ★ Tam sifirlanmaz -- oyuncu gorus hattini GERCEKTEN
+                                -- bozmadikca (onVisualLoss) supheli birikim surer.
+                                target.suspicionIndex = target.suspicionIndex * 0.5
+                            end
                         else
                             -- ★ Hedef yan/arka pencereden kaçtı — "dikiz aynası kaybı".
                             if target.onVisualLoss then
                                 pcall(target.onVisualLoss, netId, cosTheta)
                             end
+
+                            -- ★ [HS-4] Görüş hattı kaybı -- şüphe momentumu ÜSTEL sönümlenir.
+                            target.suspicionIndex = math.max(
+                                STALKING_SUSPICION_BASE,
+                                (target.suspicionIndex or STALKING_SUSPICION_BASE) * STALKING_SUSPICION_DECAY_FACTOR)
                         end
                     end
                 end
@@ -240,11 +282,14 @@ exports('StartStalking', function(targetNetId, vehicleEntity, callbacks)
     if not exists then return false end
 
     stalkedTargets[targetNetId] = {
-        vehicleEntity    = vehicleEntity,
-        startedAt        = GetGameTimer(),
-        lastKnownCoords  = nil,
-        onVisualConfirm  = callbacks and callbacks.onVisualConfirm or nil,
-        onVisualLoss     = callbacks and callbacks.onVisualLoss or nil
+        vehicleEntity      = vehicleEntity,
+        startedAt          = GetGameTimer(),
+        lastKnownCoords    = nil,
+        -- ★ [HS-4] Şüphe momentumu taban degerden baslar.
+        suspicionIndex     = STALKING_SUSPICION_BASE,
+        onVisualConfirm    = callbacks and callbacks.onVisualConfirm or nil,
+        onVisualLoss       = callbacks and callbacks.onVisualLoss or nil,
+        onSuspicionCritical= callbacks and callbacks.onSuspicionCritical or nil
     }
     stalkingRunning = true
     return true
@@ -265,6 +310,15 @@ end)
 
 exports('IsTargetInFov', function(observerCoords, observerHeading, targetCoords, fovDegrees)
     return IsTargetInFOV(observerCoords, observerHeading, targetCoords, fovDegrees)
+end)
+
+
+-- ★ [HS-4] Diğer client modüllerinin (HUD bülteni vb.) anlık şüphe
+-- momentumunu okuyabilmesi için salt-okunur getter.
+exports('GetSuspicionIndex', function(targetNetId)
+    targetNetId = tonumber(targetNetId)
+    local target = targetNetId and stalkedTargets[targetNetId]
+    return target and target.suspicionIndex or STALKING_SUSPICION_BASE
 end)
 
 

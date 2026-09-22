@@ -1122,7 +1122,33 @@ Config.Diagnostics = {
     StressTestItem        = 'matrix_diagnostic_token',
     StressTestTimeoutMs   = 15000,
 
-    PhantomPalindromeEpochCount = 10000
+    PhantomPalindromeEpochCount = 10000,
+
+    -- ★ [KATMAN 23.4] SENTETIK EXECUTOR SABOTAJ VE ENJEKSIYON KALKANI
+    -- (Synthetic Injection Simulator) — server/matrix_diagnostics.lua
+    -- TestExecutorInjection()'ın acik/kapali anahtari. Kapatilirsa test
+    -- guvenli bir sekilde ATLANIR (deger degil, TAMAMEN atlanmis sayilir)
+    -- -- diger Config Sabotaj Kalkani anahtarlariyla AYNI "savunmaci
+    -- geri dusus" felsefesi. Varsayilan ACIK: bu, gercek bir dis sistemin
+    -- HAZIR OLMASINI beklemez (DB/ox_inventory timing'ine bagli DEGILDIR),
+    -- tamamen izole/deterministik bir Mock hucre uzerinde calisir -- bu
+    -- yuzden AbortResourceOnSimulationFailure=false olsa BILE bu testin
+    -- basarisizligi HER ZAMAN kritik sayilir (bkz. SimulationChecks'teki
+    -- critical=true bayragi, server/matrix_diagnostics.lua).
+    ExecutorInjectionShieldEnabled = true,
+
+    -- ★ [KATMAN 23.5] AŞIRI AĞ VE RESMON YÜK PROFİLLEYİCİSİ (Extreme
+    -- Network & Resmon Load Profiler) — server/matrix_diagnostics.lua
+    -- TestExtremeNetworkLoad()'un Config sözleşmesi. Yük tamamen SENTETİK/
+    -- bellek-içi (GERÇEK ağ paketi/TriggerEvent YOK -- H1-v2 Anti
+    -- Stop-the-World felsefesiyle ÇELIŞMEMESI için), bu yüzden varsayılan
+    -- eşikler cömerttir (yanlış-pozitif "darboğaz" alarmı pratikte imkansız)
+    -- -- yalnızca GERÇEK bir regresyonu (gerçek bir hitch/sızıntı) yakalayan
+    -- bir tripwire'dır, rutin bir gecit DEGILDIR.
+    ExtremeNetworkLoadShieldEnabled = true,
+    ExtremeLoadPacketCount          = 10000,  -- Mock Net Events sayisi (RNG YOK, sabit)
+    ExtremeLoadTimeoutMs            = 250,    -- GetGameTimer() farki bunu asarsa "Darbogaz" sayilir
+    ExtremeLoadMaxMemoryDeltaKB     = 51200   -- ~50MB -- collectgarbage('count') deltasi bunu asarsa "Sizinti" sayilir
 }
 
 -- =====================================================================
@@ -1331,6 +1357,44 @@ Config.GangHoods = {
     -- tasiyicinin AKTIF davasina (MEVCUT /davaac -> matrix_trial_records)
     -- %100 Mahkumiyet Skoru olarak islenir.
     FrameUpMetadataTag           = '[ORIGIN: BLOODY LOOT]'
+}
+
+-- =====================================================================
+-- ★★★ MÜŞTERİ HUMINT SIZINTISI (RETAIL HUMINT) ★★★
+-- server/blackmarket.lua Matrix.CustomerIntel'in Config sözleşmesi.
+-- matrix_customer_pool (ZATEN VAR OLAN, SQL şeması DEĞİŞTİRİLMEDİ dışında
+-- tek bir yeni customer_loyalty kolonu) üzerinde çalışır. Sadakat,
+-- server/recruitment.lua DeriveTraitsFromCustomer İLE AYNI felsefeyle
+-- (ham sayaç -> [0,1] deterministik trait) türetilir -- RNG YOK. "Dead
+-- Drop" ihbar cezası, server/underworld_network.lua'nın VENDOR STING
+-- mekanizmasıyla (matrix_zone_ledger.audit_anomaly_rate, AYNI üstel
+-- katsayı Config.FragmentedIntel.StingAuditExponentialMultiplier) VE
+-- server/bureau.lua'nın ZATEN VAR OLAN Matrix.Bureau.IssueRaid'iyle
+-- (yeni bir pusu/spawn motoru İCAT EDİLMEZ) uygulanır.
+-- =====================================================================
+Config.CustomerIntel = {
+    -- DeriveLoyalty formülü: 0.5 taban + tamamlanan-iş bonusu - ihbar/
+    -- odenmemis-borç cezası, [0,1]'e clamp'lenir.
+    LoyaltyBase                    = 0.5,
+    LoyaltyGainPerDeal             = 0.05,
+    LoyaltyLossPerReport           = 0.15,
+    LoyaltyLossPerFailedPayment    = 0.10,
+
+    -- [ELİT MÜŞTERİ DEDİKODUSU] Bu sadakat esiginin ÜZERİNDEKİ müşteriler
+    -- teslimat aninda kuryeye/oyuncuya yozlaşmış polis konumu fısıldar.
+    EliteLoyaltyThreshold           = 0.8,
+    EliteIntelGainPerDelivery       = 0.25, -- matrix_fragmented_intel'e dogrudan yazilir
+
+    -- [SNITCH / İHBAR] Bu sadakat esiginin ALTINDAKI VEYA bu saflik
+    -- esiginin ALTINDA mal alan müşteriler ihbarcı sayılır.
+    SnitchLoyaltyCeiling            = 0.35,
+    SnitchLowPurityCeiling          = 0.30, -- Config.Market.GourmetMinPurity ILE AYNI olcek, BAGIMSIZ esik
+    SnitchReportsToTrigger          = 3,    -- ardarda kac ihbar "Dead Drop" satisini tetikler (0 RNG, sabit sayac)
+
+    -- Denetim-Uyarısı (Audit Warning) büyüme katsayısı: server/underworld_
+    -- network.lua vendor STING İLE TAMAMEN AYNI sabit -- ikinci bir "üssel
+    -- %50" sayısı İCAT EDİLMEZ, doğrudan referans alınır.
+    DeadDropAuditMultiplier         = Config.FragmentedIntel.StingAuditExponentialMultiplier
 }
 
 return Config

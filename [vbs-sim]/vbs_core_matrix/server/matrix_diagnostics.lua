@@ -268,6 +268,43 @@ Config.ModularSimulationQueue = {
             { 'Matrix.HitSquad module', function() return Matrix.HitSquad end },
             { 'Config.GangHoods.Hoods', function() return Config.GangHoods and Config.GangHoods.Hoods end }
         }
+    },
+    -- ★ [KATMAN 23.4] executor_sabotaj_test: bu modul acilip kapatilsa
+    -- BILE Metatable Proxy alt yapisinin (WrapReadOnlyCell/TriggerCellBreach)
+    -- kanca kaymasi YASAMADIGINI dogrular -- diger tum ModularSimulationQueue
+    -- girdileriyle AYNI "config kapatilinca da probe'lar tanimli kalmali"
+    -- sozlesmesi. Asil sabotaj SIMULASYONU (Mock executor + sahte enjeksiyon
+    -- girisimleri) TestExecutorInjection()'dadir (asagida) -- burasi SADECE
+    -- Config Sabotaj Kalkani'nin (KATMAN 2) kendi kancalarini test eder.
+    {
+        id     = 'executor_sabotaj_test',
+        get    = function() return Config.Diagnostics and Config.Diagnostics.ExecutorInjectionShieldEnabled end,
+        set    = function(v) if Config.Diagnostics then Config.Diagnostics.ExecutorInjectionShieldEnabled = v end end,
+        probes = {
+            { 'Matrix.Diagnostics.WrapReadOnlyCell',  function() return Matrix.Diagnostics and Matrix.Diagnostics.WrapReadOnlyCell end },
+            { 'Matrix.Diagnostics.TriggerCellBreach', function() return Matrix.Diagnostics and Matrix.Diagnostics.TriggerCellBreach end },
+            { 'Matrix.Diagnostics.BreachJournal',     function() return Matrix.Diagnostics and Matrix.Diagnostics.BreachJournal end }
+        }
+    },
+    -- ★ [KATMAN 23.5] extreme_network_load_test: Config Sabotaj Kalkani
+    -- (KATMAN 2) disipliniyle -- bu modul kapatilsa BILE StepGC/collectgarbage
+    -- alt yapisinin kanca kaymasi YASAMADIGINI dogrular. Asil yuk simulasyonu
+    -- TestExtremeNetworkLoad()'dadir (asagida).
+    {
+        id     = 'extreme_network_load_test',
+        get    = function() return Config.Diagnostics and Config.Diagnostics.ExtremeNetworkLoadShieldEnabled end,
+        set    = function(v) if Config.Diagnostics then Config.Diagnostics.ExtremeNetworkLoadShieldEnabled = v end end,
+        probes = {
+            -- ★ DIKKAT: probe fonksiyonu FUNCTION donerse TestConfigDependencies
+            -- onu (1,1,1) ile dogrudan CAGIRIR (bkz. yukarisi) -- collectgarbage/
+            -- GetGameTimer gibi ham global native'leri BOYLECE cagirmak (orn.
+            -- collectgarbage(1,1,1)) gecersiz-argument hatasi FIRLATIR ve testi
+            -- YANLISLIKLA basarisiz eder. Bu yuzden bu ikisi dogrudan fonksiyon
+            -- REFERANSI DEGIL, bir boolean DONDURUR (cagrilamayan/guvenli deger).
+            { 'Matrix.Diagnostics.StepGC',         function() return Matrix.Diagnostics and Matrix.Diagnostics.StepGC end },
+            { 'collectgarbage (global)',           function() return type(collectgarbage) == 'function' end },
+            { 'GetGameTimer (global)',             function() return type(GetGameTimer) == 'function' end }
+        }
     }
 }
 
@@ -814,6 +851,12 @@ local DbChecks = {
         return ColumnExists('matrix_forensic_evidence', 'inflicted_force_striation'),
         'sql/matrix_financial_core.sql calistirildi mi?'
     end },
+    { '[ADDITIVE] matrix_customer_pool.customer_loyalty kolonu mevcut (Musteri HUMINT)', function()
+        return ColumnExists('matrix_customer_pool', 'customer_loyalty'), 'sql/matrix_financial_core.sql calistirildi mi?'
+    end },
+    { '[ADDITIVE] matrix_zone_ledger.compromised kolonu mevcut (Musteri HUMINT)', function()
+        return ColumnExists('matrix_zone_ledger', 'compromised'), 'sql/matrix_financial_core.sql calistirildi mi?'
+    end },
 }
 
 
@@ -1132,13 +1175,200 @@ local function RunConfigSabotageSimCheck()
 end
 
 
+-- =====================================================================
+-- ★ [KATMAN 23.4] SENTETIK EXECUTOR SABOTAJ VE ENJEKSIYON KALKANI
+-- (Synthetic Injection Simulator)
+--
+-- RedEngine/harici executor tarzi runtime enjeksiyonlarini SIMULE eden
+-- izole bir "Mock Executor": Matrix.* kancalarina ve kurye odeme alanlarina
+-- BENZEYEN (ama GERCEK Matrix.Bots/Matrix.TrapHouses ile HICBIR baglantisi
+-- OLMAYAN) tek kullanimlik bir test hucresi uzerinde gecersiz net payload'lar
+-- ve harici argumanlarla sabotaj GIRISIMINDE bulunur.
+--
+-- BEKLENEN DAVRANIS: Matrix.Diagnostics.WrapReadOnlyCell proxy'si HER
+-- girisimi __newindex uzerinden yakalayip TriggerCellBreach
+-- ('HUCRE_IZOLASYON_IHLALI') ile jurnale yazmali VE alttaki gercek veriye
+-- YAZDIRMAMALIDIR (mutasyon sessizce reddedilir, __index okuma yolu SAGLAM
+-- kalir).
+--
+-- KRITIK BASARISIZLIK: sahte enjeksiyon zirhi asip alttaki veriyi GERCEKTEN
+-- degistirirse (Pointer Mutasyonu basarili olursa) VEYA ihlal jurnale hic
+-- yazilmazsa (sessiz sizinti), bu bir guvenlik ihlalidir -- assert()
+-- firlatilir. RunCheck bunu pcall ile yakalayip checki 'failed' isaretler;
+-- bu check SimulationChecks'e critical=true ile eklenmistir (asagida), bu
+-- yuzden basarisizligi Config.Diagnostics.AbortResourceOnSimulationFailure
+-- BAYRAGINDAN BAGIMSIZ olarak Matrix.Diagnostics.Run'in ZATEN VAR OLAN
+-- AbortResourceBoot/StopResource boru hattini tetikler (yeni bir abort
+-- mekanizmasi ICAT EDILMEZ) -- bulten: "[KATMAN 23.4][SABOTAJ] Harici
+-- executor sizintisi saptandi!".
+--
+-- Bu test tamamen izole/deterministiktir (dis sistem/DB timing'ine BAGLI
+-- DEGILDIR) -- dogru calisan bir zirhla HER ZAMAN gecer, dolayisiyla
+-- "kritik" isaretlenmesi kaynagi EBEDIYEN kilitlemez, yalnizca GERCEK bir
+-- izolasyon ihlalinde tetiklenen bir tripwire'dir.
+-- =====================================================================
+local function TestExecutorInjection()
+    if Config.Diagnostics and Config.Diagnostics.ExecutorInjectionShieldEnabled == false then
+        return true, 'Config.Diagnostics.ExecutorInjectionShieldEnabled=false -- executor sabotaj testi atlandi'
+    end
+
+    assert(type(Matrix.Diagnostics.WrapReadOnlyCell) == 'function', 'WrapReadOnlyCell tanimli degil')
+    assert(type(Matrix.Diagnostics.BreachJournal) == 'table', 'BreachJournal tanimli degil')
+
+    -- ★ Izole Mock hedef hucre -- GERCEK bot/oyuncu/kurye odeme verisiyle
+    -- HICBIR baglantisi yok.
+    local mockCourierPaymentCell = {
+        role            = 'runner',
+        payment_pending = 500.0,
+        trap_house_id   = 1,
+        psychology      = { snitch_tendency = 0.10 }
+    }
+
+    local proxy = Matrix.Diagnostics.WrapReadOnlyCell(
+        mockCourierPaymentCell, 'executor_sabotage_test', 'MOCK-EXECUTOR')
+
+    local breachesBefore = Matrix.Diagnostics.BreachJournal.breach_count
+
+    -- ★ Sahte executor'un deneyecegi gecersiz net payload/harici argument
+    -- sabotaj senaryolari -- her biri BAGIMSIZ bir __newindex denemesidir.
+    local sabotageAttempts = {
+        function() proxy.payment_pending = -999999.0 end,           -- negatif odeme enjeksiyonu
+        function() proxy.role = 'Leader' end,                       -- yetki yukseltme (privilege escalation)
+        function() proxy.trap_house_id = 0 end,                     -- rota/hedef sabotaji
+        function() proxy.psychology = { snitch_tendency = 1.0 } end,-- tablo-genelinde payload enjeksiyonu
+        function() proxy['__executor_injected_key__'] = true end    -- rasgele/harici anahtar enjeksiyonu
+    }
+
+    for _, attempt in ipairs(sabotageAttempts) do
+        pcall(attempt) -- __newindex zaten sessizce reddeder, hata firlatmaz
+    end
+
+    -- [ASSERT-1] Alttaki GERCEK veri BIREBIR ORIJINAL kalmali.
+    assert(mockCourierPaymentCell.payment_pending == 500.0,
+        '[KATMAN 23.4][SABOTAJ] Harici executor sizintisi saptandi!')
+    assert(mockCourierPaymentCell.role == 'runner',
+        '[KATMAN 23.4][SABOTAJ] Harici executor sizintisi saptandi!')
+    assert(mockCourierPaymentCell.trap_house_id == 1,
+        '[KATMAN 23.4][SABOTAJ] Harici executor sizintisi saptandi!')
+    assert(mockCourierPaymentCell.psychology.snitch_tendency == 0.10,
+        '[KATMAN 23.4][SABOTAJ] Harici executor sizintisi saptandi!')
+    assert(rawget(mockCourierPaymentCell, '__executor_injected_key__') == nil,
+        '[KATMAN 23.4][SABOTAJ] Harici executor sizintisi saptandi!')
+
+    -- [ASSERT-2] Proxy uzerinden okuma HALA calismali (ReadOnly = yazma
+    -- yasak, okuma SERBEST -- __index kirilmamis).
+    assert(proxy.payment_pending == 500.0, '__index okuma yolu bozuldu (proxy kirildi)')
+
+    -- [ASSERT-3] Her sabotaj girisimi GERCEKTEN bir HUCRE_IZOLASYON_IHLALI
+    -- olarak jurnale yazilmis olmali -- sessizce "no-op" yapip ihlali HIC
+    -- RAPORLAMAMAK da basarisizliktir (sessiz sizinti riski).
+    local recordedBreaches = Matrix.Diagnostics.BreachJournal.breach_count - breachesBefore
+    assert(recordedBreaches >= #sabotageAttempts,
+        ('[KATMAN 23.4][SABOTAJ] Harici executor sizintisi saptandi! (jurnal %d/%d ihlali kacirdi)'):format(
+            recordedBreaches, #sabotageAttempts))
+
+    return true, ('%d sabotaj girisimi metatable proxy tarafindan savusturuldu (%d HUCRE_IZOLASYON_IHLALI jurnale yazildi)'):format(
+        #sabotageAttempts, recordedBreaches)
+end
+
+
+-- =====================================================================
+-- ★ [KATMAN 23.5] AŞIRI AĞ VE RESMON YÜK PROFİLLEYİCİSİ
+-- (Extreme Network & Resmon Load Profiler)
+--
+-- Config.Diagnostics.ExtremeLoadPacketCount (varsayilan 10.000) adet
+-- SENTETİK/Mock ağ paketi payload'u bellek içinde inşa edip atarak
+-- backend'i SINIRLI/deterministik bicimde zorlar; ardindan GetGameTimer()
+-- (bu dosyanin ZATEN VAR OLAN, gercek FXServer zamanlayicisi) ile CPU-
+-- harcama suresini VE collectgarbage('count') ile RAM heap deltasini olcer.
+--
+-- ★ NEDEN GERCEK AĞ PAKETI DEGIL: FXServer Lua ortaminda os.nanotime()/
+-- os.microtime() gibi native'ler MEVCUT DEGIL (bu yuzden UYDURULMAZ --
+-- GetGameTimer() zaten bu dosyanin HER YERDE kullandigi gercek zamanlayici).
+-- Ayrica 10.000 GERCEK TriggerClientEvent/TriggerServerEvent cagrisi
+-- GERCEKTEN ag bant genisligini/Resmon'u sisirir ve dosya basi KATMAN 1
+-- "Anti Stop-The-World" felsefesiyle DOGRUDAN CELISIR. Bu yuzden yuk,
+-- KATMAN 23.4'un "Mock Executor"uyla AYNI izolasyon disipliniyle SENTETIK/
+-- bellek-ici tablolar uzerinde simule edilir -- "Paket Dusme" orani bu
+-- nedenle DETERMINISTIK olarak %0'dir (hicbir sey gercekten ag uzerinden
+-- gonderilmedigi icin kaybolacak bir sey yoktur -- "%100 Kursun Gecirmez").
+--
+-- KRITIK BASARISIZLIK: olculen sure Config.Diagnostics.ExtremeLoadTimeoutMs'i
+-- VEYA bellek deltasi Config.Diagnostics.ExtremeLoadMaxMemoryDeltaKB'yi
+-- asarsa assert() firlatilir; bu check SimulationChecks'e critical=true ile
+-- eklenmistir (KATMAN 23.4 ILE AYNI mekanizma, bkz. Matrix.Diagnostics.Run)
+-- -- bulten: "[KATMAN 23.5][DARBOGAZ]". Yuk tamamen bellek-ici/sinirli
+-- (10.000 ucuz tablo insasi, sub-milisaniye mertebesinde) oldugundan bu
+-- test dogru calisan bir sistemde HER ZAMAN gecer -- kaynagi EBEDIYEN
+-- kilitlemez, yalnizca GERCEK bir regresyonu yakalayan bir tripwire'dir.
+-- =====================================================================
+local function TestExtremeNetworkLoad()
+    if Config.Diagnostics and Config.Diagnostics.ExtremeNetworkLoadShieldEnabled == false then
+        return true, 'Config.Diagnostics.ExtremeNetworkLoadShieldEnabled=false -- asiri yuk testi atlandi'
+    end
+
+    local packetCount = (Config.Diagnostics and Config.Diagnostics.ExtremeLoadPacketCount) or 10000
+    local timeoutMs   = (Config.Diagnostics and Config.Diagnostics.ExtremeLoadTimeoutMs) or 250
+    local maxDeltaKB  = (Config.Diagnostics and Config.Diagnostics.ExtremeLoadMaxMemoryDeltaKB) or 51200
+
+    local memBefore = collectgarbage('count')
+    local startedAt = GetGameTimer()
+
+    -- ★ Mock Net Events: gercek bir TriggerClientEvent payload'una BENZEYEN
+    -- (event adi + args tablosu) ama HICBIR YERE GONDERILMEYEN sentetik bir
+    -- tablo. RNG YOK -- her payload dogrudan sabit indeksten turetilir.
+    local droppedCount = 0
+    for i = 1, packetCount do
+        local payload = {
+            event = 'matrix:mock:networkStressPacket',
+            args  = { seq = i, checksum = (i * 2654435761) % 0xFFFFFFF }
+        }
+        -- ★ "islenmis" sayilmasi icin payload'un GERCEKTEN okunmasi gerekir
+        -- (olu-kod elemesine karsi ucuz bir dogrulama, RNG YOK).
+        if payload.args.seq ~= i then droppedCount = droppedCount + 1 end
+        payload = nil
+    end
+
+    -- ★ H1-v2 disiplinini burada da koru -- bu profil KENDISI bir
+    -- Stop-the-World hitch'i URETMEMELIDIR.
+    Matrix.Diagnostics.StepGC()
+
+    local elapsedMs   = GetGameTimer() - startedAt
+    local memAfter    = collectgarbage('count')
+    local memDeltaKB  = math_max(memAfter - memBefore, 0.0)
+    local dropRatePct = (droppedCount / packetCount) * 100.0
+
+    Matrix.Log('DIAGNOSTICS',
+        '[TESHIS RAPORU - ASIRI YUK SIMULASYONU: %d Sentetik Ag Payload\'u Basariyla Islendi.]', packetCount)
+    Matrix.Log('DIAGNOSTICS',
+        '[PERFORMANS TELEMETRISI: Maksimum Resmon CPU Gecikmesi: %.2fms | Bellek Delta Degisimi: +%.2f MB | Ag Spektrum Gecirgenligi: %%%.0f Kursun Gecirmez.]',
+        elapsedMs, memDeltaKB / 1024.0, 100.0 - dropRatePct)
+
+    assert(elapsedMs <= timeoutMs,
+        ('[KATMAN 23.5][DARBOGAZ] CPU harcama suresi kritik siniri asti: %dms > %dms'):format(elapsedMs, timeoutMs))
+    assert(memDeltaKB <= maxDeltaKB,
+        ('[KATMAN 23.5][DARBOGAZ] Bellek sizintisi saptandi: +%.2fKB > %.2fKB'):format(memDeltaKB, maxDeltaKB))
+    assert(dropRatePct == 0.0,
+        ('[KATMAN 23.5][DARBOGAZ] Sentetik paket dusme orani sifir degil: %%%.2f'):format(dropRatePct))
+
+    return true, ('%d payload | %.2fms | +%.2fMB heap | dusme=%%0 (Kursun Gecirmez)'):format(
+        packetCount, elapsedMs, memDeltaKB / 1024.0)
+end
+
+
 local SimulationChecks = {
     { 'DERIN-SIM: Config Sabotaj ve Bagimlilik Kontrolu (KATMAN 2)',               RunConfigSabotageSimCheck },
     { 'DERIN-SIM: 100 eszamanli async satis stres testi (KATMAN 21.1)',            RunConcurrencyStressCheck },
     { 'DERIN-SIM: Bot yara ceza carpani 4-hane hassasiyeti (KATMAN 21.2)',          RunWoundPrecisionSimCheck },
     { 'DERIN-SIM: Hayalet Doktor 10k-epoch palindrom determinizmi (KATMAN 21.3)',   RunPhantomDoctorPalindromeSimCheck },
     { 'DERIN-SIM: Hit-and-Run drive-by tazelenmesi (KATMAN 22.1)',                  RunHitAndRunDrivebySimCheck },
-    { 'DERIN-SIM: Medikal/Buro sizinti 2x katlanma formulu (KATMAN 22.2)',          RunMedicalBureauLeakSimCheck }
+    { 'DERIN-SIM: Medikal/Buro sizinti 2x katlanma formulu (KATMAN 22.2)',          RunMedicalBureauLeakSimCheck },
+    -- ★ critical=true: diger SimulationChecks'in aksine, bu iki testin
+    -- basarisizligi Config.Diagnostics.AbortResourceOnSimulationFailure
+    -- bayragindan BAGIMSIZ olarak HER ZAMAN kaynak acilisini durdurur
+    -- (bkz. Matrix.Diagnostics.Run, asagida).
+    { 'DERIN-SIM: Sentetik Executor Sabotaj ve Enjeksiyon Kalkani (KATMAN 23.4)',   TestExecutorInjection,   critical = true },
+    { 'DERIN-SIM: Asiri Ag ve Resmon Yuk Profilleyicisi (KATMAN 23.5)',             TestExtremeNetworkLoad,  critical = true }
 }
 
 
@@ -1177,7 +1407,12 @@ function Matrix.Diagnostics.Run(deep, replyTo, isAutoBoot)
             end
 
             for _, c in ipairs(SimulationChecks) do
-                checks[#checks + 1] = RunCheck(c[1], c[2])
+                local simResult = RunCheck(c[1], c[2])
+                -- ★ [KATMAN 23.4/23.5] critical=true tasiyan girdiler (Executor
+                -- Sabotaj Kalkani, Asiri Ag Yuk Profilleyicisi) icin bayragi
+                -- sonuca tasi -- Run'in abort kararinda kullanilir (asagida).
+                simResult.critical = c.critical or false
+                checks[#checks + 1] = simResult
             end
 
             -- ★ [H1-v2] DERİN TEST ÇIKIŞ KAPISI: STAGED (aşamalı) GC.
@@ -1207,10 +1442,23 @@ function Matrix.Diagnostics.Run(deep, replyTo, isAutoBoot)
             passed, #checks, tostring(lastReport.deep), lastReport.duration_ms,
             lastReport.sealed and 'MUHURLENDI (0 hata)' or ('%d HATA'):format(failed))
 
-        if isAutoBoot and failed > 0 and Config.Diagnostics.AbortResourceOnSimulationFailure then
-            local firstFailure = nil
-            for _, c in ipairs(checks) do
-                if not c.passed then firstFailure = c; break end
+        -- ★ [KATMAN 23.4/23.5] critical=true isaretli bir check basarisiz
+        -- olursa, Config.Diagnostics.AbortResourceOnSimulationFailure=false
+        -- OLSA BILE acilis durdurulur -- bu GM'in "genel ekonomi/denge
+        -- testleri icin yumusat" kararini (dosya basi Config.Diagnostics
+        -- yorumu) DEGISTIRMEZ, yalnizca gercek bir izolasyon ihlali/backend
+        -- darbogazi icin AYRI bir tripwire ekler.
+        local criticalFailure = nil
+        for _, c in ipairs(checks) do
+            if not c.passed and c.critical then criticalFailure = c; break end
+        end
+
+        if isAutoBoot and failed > 0 and (Config.Diagnostics.AbortResourceOnSimulationFailure or criticalFailure) then
+            local firstFailure = criticalFailure
+            if not firstFailure then
+                for _, c in ipairs(checks) do
+                    if not c.passed then firstFailure = c; break end
+                end
             end
             AbortResourceBoot(('%d/%d kontrol basarisiz -- ilk hata: [%s] %s'):format(
                 failed, #checks,

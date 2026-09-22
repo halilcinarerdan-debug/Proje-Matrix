@@ -736,6 +736,217 @@ end, false)
 
 
 -- =====================================================================
+-- ★★★ MÜŞTERİ HUMINT SIZINTISI (RETAIL HUMINT) — Matrix.CustomerIntel ★★★
+-- matrix_customer_pool (ZATEN VAR OLAN, /musterikaydet ile beslenen test
+-- yatağı tablosu -- bkz. server/recruitment.lua) üzerinde çalışır; ambient
+-- sokak "keş" NPC ekonomisiyle (server/market.lua EvaluateSale) KARIŞTIRILMAZ,
+-- o dosyanın kendi yorumu bu ayrımı zaten belgeler. Bu modül SADECE
+-- matrix_customer_pool'da GERÇEKTEN kayıtlı (yani /musterikaydet ile veya
+-- gelecekteki bir gerçek teslimat entegrasyonuyla izlenen) müşterilere
+-- uygulanır.
+--
+-- [CI-1] SADAKAT TÜRETİMİ: server/recruitment.lua DeriveTraitsFromCustomer
+--   İLE AYNI "ham sayaç -> [0,1] deterministik trait" disiplini. RNG YOK.
+-- [CI-2] ELİT DEDİKODU: customer_loyalty eşiği geçilince kuryeye/oyuncuya
+--   Config.Bureau.CellTowers'tan (ZATEN VAR OLAN Büro altyapı koordinatları
+--   -- yeni bir "polis konumu" veri kümesi İCAT EDİLMEZ) deterministik bir
+--   açı/mesafe sağlama toplamıyla türetilmiş bir "yozlaşmış polis" konumu
+--   fısıldanır ve matrix_fragmented_intel'e (Matrix.FragmentedIntel.Add,
+--   server/underworld_network.lua'daki AYNI fonksiyon) +intel yazılır.
+-- [CI-3] SNITCH/İHBAR: düşük saflık VEYA zayıf sadakat müşterisi ardışık
+--   Config.CustomerIntel.SnitchReportsToTrigger kez ihbar sayacına
+--   ulaşınca, kuryenin bulunduğu bölgenin matrix_zone_ledger kaydı
+--   compromised=1 olur VE audit_anomaly_rate, server/underworld_network.lua
+--   vendor STING İLE TAMAMEN AYNI üstel katsayıyla (Config.FragmentedIntel.
+--   StingAuditExponentialMultiplier, "+%50") büyür. Kuryenin trap house'u,
+--   ZATEN VAR OLAN Matrix.Bureau.IssueRaid ile gerçek bir baskına (sahte
+--   "Undercover Sting" pususu) dönüştürülür -- yeni bir pusu/spawn motoru
+--   İCAT EDİLMEZ.
+-- =====================================================================
+Matrix.CustomerIntel = Matrix.CustomerIntel or {}
+
+local CI_CHECKSUM_SALT = 97
+
+-- server/underworld_network.lua/server/rendezvous.lua ChecksumOf İLE AYNI
+-- desen (dosya-yerel kopya -- mevcut kod tabanının kendi konvansiyonu).
+local function CI_ChecksumOf(raw, salt)
+    local sum = 0
+    for i = 1, #raw do
+        sum = (sum + (raw:byte(i) * (i + salt))) % 0xFFFFFFF
+    end
+    return sum
+end
+
+
+--- ★ [CI-1] Deterministik sadakat türetimi -- RNG YOK, aynı satır HER
+--- ZAMAN aynı sadakat değerini üretir.
+function Matrix.CustomerIntel.DeriveLoyalty(row)
+    local deals   = tonumber(row and row.completed_deals) or 0
+    local reports = tonumber(row and row.times_reported) or 0
+    local failed  = tonumber(row and row.failed_payments) or 0
+
+    local loyalty = Config.CustomerIntel.LoyaltyBase
+        + (deals   * Config.CustomerIntel.LoyaltyGainPerDeal)
+        - (reports * Config.CustomerIntel.LoyaltyLossPerReport)
+        - (failed  * Config.CustomerIntel.LoyaltyLossPerFailedPayment)
+
+    return Matrix.Clamp(loyalty, 0.0, 1.0)
+end
+
+
+--- ★ [CI-2] Config.Bureau.CellTowers'tan deterministik bir "yozlaşmış polis
+--- konumu" türetir -- server/rendezvous.lua ComputeHandoffCoords İLE AYNI
+--- açı/mesafe ayrıştırma deseni.
+local function DeriveDirtyCopBulletin(customerCitizenid, dealerCitizenid)
+    local towers = Config.Bureau.CellTowers
+    if type(towers) ~= 'table' or #towers == 0 then return nil end
+
+    local raw = ('%s#%s#DIRTYCOP'):format(tostring(customerCitizenid), tostring(dealerCitizenid))
+    local sum = CI_ChecksumOf(raw, CI_CHECKSUM_SALT)
+
+    local tower    = towers[(sum % #towers) + 1]
+    local angleRad = math.rad(sum % 360)
+    local dist     = 50.0 + ((math.floor(sum / 360) % 1000) / 1000.0) * 250.0
+
+    return {
+        tower_id = tower.id,
+        coords   = vector3(
+            tower.coords.x + (math.cos(angleRad) * dist),
+            tower.coords.y + (math.sin(angleRad) * dist),
+            tower.coords.z)
+    }
+end
+
+
+--- ★ [CI-2]/[CI-3] Ana giriş noktası. dealerSrc opsiyoneldir (nil ise
+--- yalnızca DB/istihbarat tarafı işlenir, oyuncuya bildirim gönderilmez --
+--- örn. konsoldan/test amaçlı çağrı).
+function Matrix.CustomerIntel.ProcessDelivery(dealerSrc, customerCitizenid, botId, purity)
+    if type(customerCitizenid) ~= 'string' or customerCitizenid == '' then
+        return false, 'bad_customer'
+    end
+
+    local row = MySQL.single.await('SELECT * FROM matrix_customer_pool WHERE citizenid = ?', { customerCitizenid })
+    if not row then
+        -- ★ Ambient/izlenmeyen müşteri -- server/market.lua'nın kendi ayrımı
+        -- ile TUTARLI: bu sistem SADECE gerçek matrix_customer_pool
+        -- kayıtlarına uygulanır.
+        return false, 'not_tracked'
+    end
+
+    local loyalty = Matrix.CustomerIntel.DeriveLoyalty(row)
+    MySQL.prepare('UPDATE matrix_customer_pool SET customer_loyalty = ? WHERE citizenid = ?', { loyalty, customerCitizenid })
+
+    local dealerState     = (type(dealerSrc) == 'number' and dealerSrc > 0) and Matrix.GetOrCreatePlayerState(dealerSrc) or nil
+    local dealerCitizenid = dealerState and dealerState.citizenid
+
+    if loyalty >= Config.CustomerIntel.EliteLoyaltyThreshold then
+        if dealerCitizenid and Matrix.FragmentedIntel and Matrix.FragmentedIntel.Add then
+            local bulletin = DeriveDirtyCopBulletin(customerCitizenid, dealerCitizenid)
+            if bulletin then
+                Matrix.FragmentedIntel.Add(dealerCitizenid, 'dirty_cop_location',
+                    ('tower_%d'):format(bulletin.tower_id), Config.CustomerIntel.EliteIntelGainPerDelivery)
+
+                if dealerSrc then
+                    TriggerClientEvent('chat:addMessage', dealerSrc, { args = { '[MUSTERI HUMINT]',
+                        ('Elit musteri (sadakat:%.2f) yozlasmis bir polisin ~%.0f,%.0f civarinda gorevlendigini fisildadi (+%.2f parcali istihbarat).'):format(
+                            loyalty, bulletin.coords.x, bulletin.coords.y, Config.CustomerIntel.EliteIntelGainPerDelivery) } })
+                end
+
+                Matrix.Log('BLACKMARKET',
+                    '[MUSTERI HUMINT] %s (sadakat:%.3f) -> %s icin dirty_cop_location sizdirdi (+%.2f intel, kule #%d).',
+                    customerCitizenid, loyalty, tostring(dealerCitizenid), Config.CustomerIntel.EliteIntelGainPerDelivery, bulletin.tower_id)
+            end
+        end
+        return true, { path = 'elite_gossip', loyalty = loyalty }
+    end
+
+    local isLowQuality  = (tonumber(purity) or 1.0) < Config.CustomerIntel.SnitchLowPurityCeiling
+    local isWeakLoyalty = loyalty <= Config.CustomerIntel.SnitchLoyaltyCeiling
+
+    if not (isLowQuality or isWeakLoyalty) then
+        return true, { path = 'neutral', loyalty = loyalty }
+    end
+
+    local newReports = (tonumber(row.times_reported) or 0) + 1
+    MySQL.prepare('UPDATE matrix_customer_pool SET times_reported = ? WHERE citizenid = ?', { newReports, customerCitizenid })
+
+    if newReports < Config.CustomerIntel.SnitchReportsToTrigger then
+        return true, { path = 'snitch_pending', loyalty = loyalty, reports = newReports }
+    end
+
+    -- ★ [CI-3] Esik asildi -- sayaç sıfırlanır (deterministik, tekrar
+    -- tetiklemeden önce aynı sayıda taze ihbar gerekir) ve "Dead Drop"
+    -- Büro'ya satılır.
+    MySQL.prepare('UPDATE matrix_customer_pool SET times_reported = 0 WHERE citizenid = ?', { customerCitizenid })
+
+    local bot         = tonumber(botId) and Matrix.Bots[tonumber(botId)] or nil
+    local botCoords    = bot and bot.state and bot.state.coords or nil
+    local zoneId       = botCoords and Matrix.Market and Matrix.Market.FindNearestZone and Matrix.Market.FindNearestZone(botCoords) or nil
+    local trapHouseId  = bot and bot.state and bot.state.trap_house_id or nil
+
+    if zoneId then
+        MySQL.prepare([[
+            INSERT INTO matrix_zone_ledger (zone_id, compromised, audit_anomaly_rate, updated_at)
+            VALUES (?, 1, ?, NOW())
+            ON DUPLICATE KEY UPDATE
+                compromised        = 1,
+                audit_anomaly_rate = (audit_anomaly_rate + 0.01) * ?,
+                updated_at         = NOW()
+        ]], { zoneId, Config.CustomerIntel.DeadDropAuditMultiplier, Config.CustomerIntel.DeadDropAuditMultiplier })
+
+        Matrix.Log('BLACKMARKET',
+            '[MUSTERI HUMINT SIZINTISI] %s ihbar etti (#%d ardisik) -- Bolge #%d compromised=1, denetim-uyarisi (Audit Warning) x%.2f sicradi.',
+            customerCitizenid, newReports, zoneId, Config.CustomerIntel.DeadDropAuditMultiplier)
+    end
+
+    if trapHouseId and Matrix.Bureau and Matrix.Bureau.IssueRaid then
+        local raidOk, raidErr = pcall(Matrix.Bureau.IssueRaid, trapHouseId)
+        if raidOk then
+            Matrix.Log('BLACKMARKET',
+                '[SAHTE UNDERCOVER STING] Musteri ihbari -- Trap #%d Buro pususuna donusturuldu.', trapHouseId)
+        else
+            Matrix.Log('BLACKMARKET', '[HATA] IssueRaid basarisiz (yutuldu): %s', tostring(raidErr))
+        end
+    end
+
+    return true, { path = 'snitch_triggered', loyalty = loyalty, zone_id = zoneId, trap_house_id = trapHouseId }
+end
+
+
+RegisterNetEvent('matrix:server:customerIntel:reportDelivery', function(customerCitizenid, botId, purity)
+    local src = source
+    if type(src) ~= 'number' or src <= 0 then return end
+    local ok, err = pcall(Matrix.CustomerIntel.ProcessDelivery, src, customerCitizenid, botId, purity)
+    if not ok then
+        Matrix.Log('BLACKMARKET', '[HATA] CustomerIntel.ProcessDelivery basarisiz (yutuldu): %s', tostring(err))
+    end
+end)
+
+
+-- /musteriteslimsim [citizenid] [botId] [saflik(0-1)] -- gercek oynanis
+-- entegrasyonu beklemeden Musteri HUMINT akisini gozlemlemek icin
+-- /musterikaydet//havuztara ILE AYNI test-yatagi disiplini.
+RegisterCommand('musteriteslimsim', function(src, args)
+    local citizenid = args[1]
+    local botId     = tonumber(args[2])
+    local purity    = tonumber(args[3]) or 1.0
+
+    if not citizenid then
+        Reply(src, 'Kullanim: /musteriteslimsim [citizenid] [botId] [saflik(0-1)]')
+        return
+    end
+
+    local ok, result = Matrix.CustomerIntel.ProcessDelivery(src, citizenid, botId, purity)
+    if ok then
+        Reply(src, ('[ISLENDI] yol=%s sadakat=%.3f'):format(tostring(result.path), result.loyalty or -1.0))
+    else
+        Reply(src, ('Basarisiz: %s'):format(tostring(result)))
+    end
+end, false)
+
+
+-- =====================================================================
 -- EXPORTLAR
 -- =====================================================================
 -- ★ [SEC-4] NOT: bu export sunucu-içi güvenilir bir çağırandır (örn. bir
@@ -749,3 +960,6 @@ exports('BuyBlackMarketVehicle', function(src, catalogId)
 end)
 exports('GenerateScratchedPlate', function(citizenid) return Matrix.BlackMarket.GenerateScratchedPlate(citizenid) end)
 exports('GenerateWeaponSerial',  function(citizenid, weaponItem) return Matrix.BlackMarket.GenerateWeaponSerial(citizenid, weaponItem) end)
+exports('ProcessCustomerDeliveryIntel', function(dealerSrc, customerCitizenid, botId, purity)
+    return Matrix.CustomerIntel.ProcessDelivery(dealerSrc, customerCitizenid, botId, purity)
+end)

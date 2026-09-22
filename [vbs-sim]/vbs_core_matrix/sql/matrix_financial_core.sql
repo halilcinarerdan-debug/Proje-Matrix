@@ -1337,4 +1337,20 @@ ALTER TABLE `matrix_forensic_evidence`
 ALTER TABLE `matrix_forensic_evidence`
     ADD COLUMN IF NOT EXISTS `inflicted_force_striation` FLOAT NOT NULL DEFAULT 0.0;
 
+-- ---------------------------------------------------------------------
+-- ★ MÜŞTERİ HUMINT SIZINTISI (Retail HUMINT) -- server/blackmarket.lua
+-- Matrix.CustomerIntel'in sözleşmesi. customer_loyalty, server/recruitment.
+-- lua DeriveTraitsFromCustomer İLE AYNI deterministik türetim felsefesiyle
+-- ham sayaçlardan (completed_deals/times_reported/failed_payments, ZATEN
+-- VAR OLAN kolonlar) hesaplanıp buraya yazılır -- yeni bir sayaç İCAT
+-- EDİLMEZ. matrix_zone_ledger.compromised, server/underworld_network.lua
+-- vendor STING'in `compromised` bayrağıyla AYNI isim/anlam -- "Dead Drop"
+-- ihbar edilince o bölge sahte bir Undercover Sting'e dönüşür.
+-- ---------------------------------------------------------------------
+ALTER TABLE `matrix_customer_pool`
+    ADD COLUMN IF NOT EXISTS `customer_loyalty` FLOAT NOT NULL DEFAULT 0.500;
+
+ALTER TABLE `matrix_zone_ledger`
+    ADD COLUMN IF NOT EXISTS `compromised` TINYINT(1) NOT NULL DEFAULT 0;
+
 SET FOREIGN_KEY_CHECKS = 1;
