@@ -1075,6 +1075,20 @@ local function RunHitAndRunDrivebySimCheck()
     end
     pcall(SetEntityOrphanMode, driver, 2)
 
+    -- ★ DÜZELTME: TASK_VEHICLE_DRIVE_BY server context'te KAYITLI DEĞİL
+    -- (silah ateşleme/nişan alma task'leri FiveM'de yalnızca client'ta
+    -- çalışır -- server/hitsquad.lua'nın ZATEN VAR OLAN pcall+sonuç-yoksay
+    -- deseniyle AYNI gerçek sınırlama). Bu, bu kontrolün DOĞRULAYABİLECEĞİ
+    -- bir şey değil -- global'in var olup olmadığını tespit edip diğer
+    -- ortam-kısıtlı kontroller (araç/ped model doğurulamadı) gibi ATLANDI
+    -- döndürür; sahte bir HATA olarak raporlanmaz.
+    if type(TaskVehicleDriveby) ~= 'function' then
+        pcall(function() if DoesEntityExist(driver) then DeleteEntity(driver) end end)
+        pcall(function() if DoesEntityExist(vehicle) then DeleteEntity(vehicle) end end)
+        vehicle, driver = nil, nil
+        return true, 'ATLANDI: TaskVehicleDriveby server tarafinda tanimli degil (yalnizca client-taraf native)'
+    end
+
     local drivebyOk, drivebyErr = pcall(TaskVehicleDriveby, driver, driver, 0, 0.0, 0.0, 0.0,
         hs.DrivebyRange, hs.PedAccuracy, false, GetHashKey('FIRING_PATTERN_FULL_AUTO'))
 
