@@ -1495,9 +1495,16 @@ end
 --- dünyadan çeker. Entity NetID'leri, Dispatches[botId] nil'lenmeden ÖNCE
 --- yakalanır; böylece bot kaydı silinmiş olsa dahi ped/araç orphan KALMAZ.
 --- Co-Op Mutex burada serbest bırakılır (is_locked = false).
+-- ★ [H12-RACE] ox_inventory envanter transferleri (DepositDealerCargoToTrapStash/
+-- InspectBustedBot/FlushBotStreetCash) SENKRON export'lar olsa da, bu bayrak
+-- ileride bunlardan biri promise/yield tabanlı hale getirilirse is_locked'ın
+-- ERKEN serbest bırakılmasını (dupe/race) İMKANSIZ kılar: unlock bloğu bu
+-- bayrak true olmadan ÇALIŞMAZ, bayrak da yalnızca envanter transferlerini
+-- içeren reason-bloğu TAMAMEN bittikten sonra set edilir.
 function Matrix.CompleteDispatch(botId, reason)
     local dispatch = Matrix.Dispatches[botId]
     if not dispatch then return false end
+    local inventoryOpsSettled = false
 
 
     -- ★ [H9] Snapshot al — sonrasında Dispatches[botId]'yi nil'lesek bile
@@ -1605,6 +1612,11 @@ function Matrix.CompleteDispatch(botId, reason)
     end
 
 
+    -- ★ [H12-RACE] Bu noktaya kadar tüm ox_inventory transferleri (varsa)
+    -- pcall ile SENKRON şekilde tamamlanmış durumda — bayrak burada set edilir.
+    inventoryOpsSettled = true
+
+
     if plate and Matrix.Logistics and Matrix.Logistics.ReleaseVehicleLock then
         pcall(Matrix.Logistics.ReleaseVehicleLock, plate)
     end
@@ -1624,8 +1636,14 @@ function Matrix.CompleteDispatch(botId, reason)
     if bot then
         bot.state.spawned   = false
         bot.state.net_id    = nil
-        -- ★ [H12] Co-Op Mutex serbest bırakılır — bota yeniden sevk emri verilebilir.
-        bot.state.is_locked = false
+        -- ★ [H12][H12-RACE] Co-Op Mutex SADECE envanter transferleri kesin
+        -- olarak bittiyse serbest bırakılır — aksi halde bot kilitli kalır
+        -- (bir sonraki sevke KİLİTLİ döner, ama asla erken dupe penceresi AÇMAZ).
+        if inventoryOpsSettled then
+            bot.state.is_locked = false
+        else
+            Matrix.Log('CORE', '[HATA] CompleteDispatch (%s): envanter transferleri onaylanmadan mutex serbest birakilmadi (guvenlik kilidi).', tostring(botId))
+        end
     end
 
 
