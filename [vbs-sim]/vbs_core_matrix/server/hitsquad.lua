@@ -169,9 +169,19 @@ local function TickPlayer(src)
         local dist = #(coords - vehCoords)
         if dist <= Config.HitSquad.AttackRange then
             squad.phase, squad.phase_started_at = 'driveby', Matrix.Now()
-            pcall(TaskVehicleDriveby, squad.driver, ped, 0, 0.0, 0.0, 0.0,
-                Config.HitSquad.DrivebyRange, Config.HitSquad.PedAccuracy, false,
-                GetHashKey('FIRING_PATTERN_FULL_AUTO'))
+            -- ★ DÜZELTME: TaskVehicleDriveby server context'te tanimli
+            -- DEGIL (silah atesleme/nisan task'leri FiveM'de yalnizca
+            -- client-tarafta calisir) -- bu daima nil'e pcall eder ve
+            -- sessizce basarisiz olur (bkz. server/matrix_diagnostics.lua
+            -- DERIN-SIM kontrolu #100, ayni sinirlamayi ATLANDI olarak
+            -- raporlar). Type-check ile aciktan atlanir; davranis ONCEDEN
+            -- de aynen buydu (pcall zaten sonucu yoksayiyordu), yalnizca
+            -- artik niyet dokumante ve gereksiz nil-cagri denemesi yok.
+            if type(TaskVehicleDriveby) == 'function' then
+                pcall(TaskVehicleDriveby, squad.driver, ped, 0, 0.0, 0.0, 0.0,
+                    Config.HitSquad.DrivebyRange, Config.HitSquad.PedAccuracy, false,
+                    GetHashKey('FIRING_PATTERN_FULL_AUTO'))
+            end
         else
             pcall(TaskVehicleDriveToCoord, squad.driver, squad.vehicle, coords.x, coords.y, coords.z,
                 Config.HitSquad.CruiseSpeed, 0, GetHashKey(Config.HitSquad.VehicleModel),
