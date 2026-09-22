@@ -433,7 +433,7 @@ function Matrix.Wounds.ApplyBotRegionalDamage(botId, rawDamage, forcedZone)
                     wound_zone           = w.wound_zone,
                     permanently_crippled = w.permanently_crippled,
                     installed_prosthetic = w.installed_prosthetic,
-                    updated_at           = os.time()
+                    updated_at           = Matrix.Now()
                 }
             end)
         end

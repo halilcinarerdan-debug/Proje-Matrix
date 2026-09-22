@@ -60,11 +60,16 @@ local SetPlayerRoutingBucket         = SetPlayerRoutingBucket
 local SetEntityRoutingBucket         = SetEntityRoutingBucket
 
 
-local function Reply(src, msg)
+--- ★ DÜZELTME: eskiden burası 'chat:addMessage' ile arcade tarzı sohbet
+--- bildirimi gönderiyordu (chat penceresi kapalıyken SESSİZCE kayboluyordu).
+--- Artık server/main.lua'nın client/hud.lua'da (lib.notify ile) işlenen
+--- MEVCUT 'matrix:client:actionNotify' kancasını kullanır -- chat açık
+--- olsun olmasın ekranda görülür, ve arcade UI'siz monokrom bildirim.
+local function Reply(src, msg, ok)
     if type(src) == 'number' and src > 0 then
-        TriggerClientEvent('chat:addMessage', src, { args = { '[TRAP HOUSE]', msg } })
+        TriggerClientEvent('matrix:client:actionNotify', src, ok or false, msg)
     else
-        print(('[MATRIX:TRAPHOUSE:CONSOLE] %s'):format(msg))
+        Matrix.Log('TRAPHOUSE', '[KONSOL] %s', tostring(msg))
     end
 end
 
@@ -401,7 +406,7 @@ RegisterNetEvent('matrix:server:trapHouseInterior:giveItemToBot', function(botId
     end
 
 
-    Reply(src, ('%s (x%d) Bot #%d envanterine teslim edildi.'):format(slotData.label or slotData.name, transferCount, botId))
+    Reply(src, ('%s (x%d) Bot #%d envanterine teslim edildi.'):format(slotData.label or slotData.name, transferCount, botId), true)
     Matrix.Log('TRAPHOUSE', 'src=%d -> Bot #%d envanter teslimi: %s x%d', src, botId, slotData.name, transferCount)
 end)
 
@@ -440,7 +445,7 @@ RegisterNetEvent('matrix:server:trapHouseInterior:transferBotToBot', function(fr
     end
 
 
-    Reply(src, ('Bot #%d -> Bot #%d: %s x%d aktarildi.'):format(fromBotId, toBotId, itemName, count))
+    Reply(src, ('Bot #%d -> Bot #%d: %s x%d aktarildi.'):format(fromBotId, toBotId, itemName, count), true)
     Matrix.Log('TRAPHOUSE', 'Bot #%d -> Bot #%d envanter aktarimi (src=%d): %s x%d', fromBotId, toBotId, src, itemName, count)
 end)
 
@@ -456,19 +461,19 @@ RegisterCommand('interiordurum', function(src)
         if n > 0 then
             count = count + n
             Reply(src, ('Trap #%d icinde %d kisi (bucket:%d)'):format(
-                trapHouseId, n, Matrix.TrapHouseInterior.GetBucket(trapHouseId)))
+                trapHouseId, n, Matrix.TrapHouseInterior.GetBucket(trapHouseId)), true)
         end
     end
-    Reply(src, ('--- Toplam %d oyuncu bir trap house icinde ---'):format(count))
+    Reply(src, ('--- Toplam %d oyuncu bir trap house icinde ---'):format(count), true)
 
 
     -- ★ KATMAN 7: ped'i olmadan mantiken icerideki (stash isi yapan) botlar.
     local stashCount = 0
     for botId, trapHouseId in pairs(BotsMarkedForStashRun) do
         stashCount = stashCount + 1
-        Reply(src, ('Bot #%d trap house #%d deposunda (Cikis Koprusu bekliyor, ped yok)'):format(botId, trapHouseId))
+        Reply(src, ('Bot #%d trap house #%d deposunda (Cikis Koprusu bekliyor, ped yok)'):format(botId, trapHouseId), true)
     end
-    Reply(src, ('--- Toplam %d bot depo isleminde ---'):format(stashCount))
+    Reply(src, ('--- Toplam %d bot depo isleminde ---'):format(stashCount), true)
 end, false)
 
 
